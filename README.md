@@ -169,6 +169,20 @@ docker run --rm -v /var/run/docker.sock:/var/run/docker.sock containrrr/watchtow
 
 版本格式为 `v上游版本-loeminn.修订号`：同一上游版本上的自用更新递增修订号，升级上游版本后从 `1` 重新计数。此后缀用于区分 fork，与上游官方发布独立。改动和验证记录见 [CHANGELOG.md](CHANGELOG.md)。
 
+### 自用 Docker 镜像
+
+在 GitHub 仓库的 Actions secrets 中配置 `DOCKERHUB_USERNAME` 和 `DOCKERHUB_TOKEN`（Docker Hub 读写访问令牌），镜像发布到 `DOCKERHUB_USERNAME/quark-auto-save`。
+
+推送 `v*-loeminn.*` 标签时自动构建；也可在 Actions 的 **Docker Publish** 中手动运行，选择 `custom` 分支，并填写已存在的版本标签，例如 `v0.8.7-loeminn.1`。Fork 首次使用需在 Actions 页面启用工作流；手动运行入口需要默认分支上存在该工作流。
+
+每次成功构建同时推送版本标签和 `latest`，两者对应同一镜像，支持 `linux/amd64`、`linux/arm64`、`linux/arm/v7`。构建使用指定版本标签的源码，镜像内显示对应版本号。手动发布旧版本也会将 `latest` 指向该版本。
+
+```bash
+docker pull <DockerHub用户名>/quark-auto-save:latest
+# 或固定使用指定版本
+docker pull <DockerHub用户名>/quark-auto-save:v0.8.7-loeminn.1
+```
+
 ### 刷新媒体库
 
 在有新转存时，可触发完成相应功能，如自动刷新媒体库、生成 .strm 文件等。配置指南：[插件配置](https://github.com/Cp0204/quark-auto-save/wiki/插件配置)
