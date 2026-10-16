@@ -147,9 +147,35 @@ class Config:
 
 class MagicRename:
 
+    # 奇数个反斜杠转义左花括号；偶数个反斜杠作为字面量保留。
+    padded_group_pattern = re.compile(
+        r"(?<!\\)((?:\\\\)*)\{\\([1-9][0-9]*):0([1-9][0-9]*)\}"
+    )
+    # 独立 P/X 标记不能紧跟数字，避免识别分辨率和帧率；季集格式单独处理。
+    episode_marker = (
+        r"(?:[Ee][Pp]?|(?<![A-Za-z0-9])[Pp]|"
+        r"(?<![A-Za-z0-9])[Xx](?!26[45](?!\d))|第)"
+    )
+    season_episode_marker = r"[Ss]\d+[EePpXx]"
+    # 普通集号允许版本/完结后缀，其余字母后缀仍排除，避免识别 1080p 等参数。
+    plain_episode_number = (
+        r"(?!(?:19|20)\d{2}(?!\d))\d+"
+        r"(?:(?![\dA-Za-z])|(?=(?i:v\d+(?:end)?|end)(?![\dA-Za-z])))"
+    )
+
     magic_regex = {
         "$TV": {
-            "pattern": r".*?([Ss]\d{1,2})?(?:[第EePpXx\.\-\_\( ]{1,2}|^)(\d{1,3})(?!\d).*?\.(mp4|mkv)",
+            "pattern": (
+                r".*?([Ss]\d+)?(?:(?(1)[PpXx]|(?!))|"
+                + episode_marker
+                + r"|(?!.*(?:"
+                + episode_marker
+                + r"|"
+                + season_episode_marker
+                + r")\d+)(?:[.\-_\( ]{1,2}|^)(?="
+                + plain_episode_number
+                + r"))(\d+)(?!\d).*?\.(mp4|mkv)"
+            ),
             "replace": r"\1E\2.\3",
         },
         "$BLACK_WORD": {
@@ -169,17 +195,19 @@ class MagicRename:
             r"(?<!\d)[01]?\d[\.\-/月][0123]?\d",
         ],
         "{YEAR}": [r"(?<!\d)(18|19|20)\d{2}(?!\d)"],
-        "{S}": [r"(?<=[Ss])\d{1,2}(?=[EeXx])", r"(?<=[Ss])\d{1,2}"],
-        "{SXX}": [r"[Ss]\d{1,2}(?=[EeXx])", r"[Ss]\d{1,2}"],
+        "{S}": [r"(?<=[Ss])\d+(?=[EeXx])", r"(?<=[Ss])\d+"],
+        "{SXX}": [r"[Ss]\d+(?=[EeXx])", r"[Ss]\d+"],
         "{E}": [
-            r"(?<=[Ss]\d\d[Ee])\d{1,3}",
-            r"(?<=[Ee])\d{1,3}",
-            r"(?<=[Ee][Pp])\d{1,3}",
-            r"(?<=第)\d{1,3}(?=[集期话部篇])",
-            r"(?<!\d)\d{1,3}(?=[集期话部篇])",
-            r"(?!.*19)(?!.*20)(?<=[\._])\d{1,3}(?=[\._])",
-            r"^\d{1,3}(?=\.\w+)",
-            r"(?<!\d)\d{1,3}(?!\d)(?!$)",
+            r"[Ss]\d+(?:[Ee][Pp]?|[PpXx])(?P<episode>\d+)",
+            r"(?<=[Ee])\d+",
+            r"(?<=[Ee][Pp])\d+",
+            r"(?<=[Pp])(?<![A-Za-z0-9][Pp])\d+",
+            r"(?<=[Xx])(?<![A-Za-z0-9][Xx])(?!26[45](?!\d))\d+",
+            r"(?<=第)\d+(?=[集期话部篇])",
+            r"(?<!\d)\d+(?=[集期话部篇])",
+            r"(?<=[\._])" + plain_episode_number + r"(?=[\._])",
+            r"^" + plain_episode_number + r"(?=\.\w+)",
+            r"(?<![\dA-Za-z])" + plain_episode_number + r"(?!$)",
         ],
         "{PART}": [
             r"(?<=[集期话部篇第])[上中下一二三四五六七八九十]",
@@ -231,6 +259,21 @@ class MagicRename:
             return file_name
         # 预处理替换变量
         for key, p_list in self.magic_variable.items():
+            if key in ("{E}", "{S}"):
+                variable_pattern = r"\{(" + key[1] + r"+)\}"
+                if not re.search(variable_pattern, replace):
+                    continue
+                value = ""
+                for p in p_list:
+                    if match := re.search(p, file_name):
+                        value = match.groupdict().get("episode") or match.group()
+                        break
+                replace = re.sub(
+                    variable_pattern,
+                    lambda m: value.zfill(len(m.group(1))) if value else "",
+                    replace,
+                )
+                continue
             if key in replace:
                 # 正则类替换变量
                 if p_list and isinstance(p_list, list):
@@ -239,6 +282,8 @@ class MagicRename:
                         if match:
                             # 匹配成功，替换为匹配到的值
                             value = match.group()
+                            if key == "{SXX}":
+                                value = "S" + value[1:].zfill(2)
                             # 日期格式处理：补全、格式化
                             if key == "{DATE}":
                                 value = "".join(
@@ -260,7 +305,25 @@ class MagicRename:
                     # 清理未匹配的 magic_variable key
                     replace = replace.replace(key, "")
         if pattern and replace:
-            file_name = re.sub(pattern, replace, file_name)
+            padded_groups = list(self.padded_group_pattern.finditer(replace))
+            if padded_groups:
+                def expand_replace(match):
+                    parts = []
+                    start = 0
+                    for group in padded_groups:
+                        parts.append(match.expand(replace[start:group.start()]))
+                        parts.append(match.expand(group[1]))
+                        value = match.group(int(group[2])) or ""
+                        if value.isdecimal():
+                            value = value.zfill(int(group[3]))
+                        parts.append(value)
+                        start = group.end()
+                    parts.append(match.expand(replace[start:]))
+                    return "".join(parts)
+
+                file_name = re.sub(pattern, expand_replace, file_name)
+            else:
+                file_name = re.sub(pattern, replace, file_name)
         else:
             file_name = replace
         return file_name
@@ -319,6 +382,8 @@ class MagicRename:
             magic_i = match.group()
             pattern_i = r"\d" * magic_i.count("I")
             pattern = replace.replace(match.group(), "🔢")
+            pattern = re.sub(r"\{(?:E+|S+)\}", "🔣", pattern)
+            pattern = self.padded_group_pattern.sub("🔣", pattern)
             for key, _ in self.magic_variable.items():
                 if key in pattern:
                     pattern = pattern.replace(key, "🔣")

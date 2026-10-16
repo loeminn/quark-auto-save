@@ -17,6 +17,8 @@ env:
 
 jobs:
   build-and-push:
+    # Fork 的自动发布不依赖原作者的镜像仓库凭据；仍允许手动构建。
+    if: github.repository == 'Cp0204/quark-auto-save' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
